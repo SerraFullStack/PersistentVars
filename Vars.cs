@@ -1,10 +1,11 @@
 /*
 	by: Rafael Tonello (tonello.rafinha@gmail.com)
 	
-	Version; 1.0.0.0
+	Version; 1.1.0.0
 
 	History:
 		1.0.0.0 -> 24/01/2018-> First version
+		1.1.0.0 -> 24/01/2018-> Prefix for variables
 
 */
 
@@ -101,15 +102,20 @@ namespace FilesVars
         object toLock = new object();
         bool _useCacheInRam = true;
         string directory = "";
+        string varsPrefix;
 
-        public Vars(string directory ="", bool useCacheInRam = true)
+        public Vars(string directory = "", bool useCacheInRam = true, string varsPrefix = "")
         {
             this._useCacheInRam = useCacheInRam;
             this.appPath = System.IO.Path.GetDirectoryName(System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName) + "\\";
+            this.varsPrefix = varsPrefix;
             if (directory == "")
                 directory = this.appPath + "\\vars";
 
             this.directory = directory;
+
+            if (!System.IO.Directory.Exists(directory))
+                System.IO.Directory.CreateDirectory(directory);
 
         }
         /// <summary>
@@ -122,6 +128,7 @@ namespace FilesVars
         {
             lock (toLock)
             {
+                name = varsPrefix + name;
                 if (_useCacheInRam)
                 {
                     if ((!this.cache.ContainsKey(name)) || (this.cache[name] == null)) this.cache[name] = new FileVar { name = name };
@@ -145,13 +152,12 @@ namespace FilesVars
 
             sender.sleep(10);
             int cont = 0;
-            if (!System.IO.Directory.Exists(directory))
-                System.IO.Directory.CreateDirectory(directory);
+            
             while (cont < this.cache.Count)
             {
                 try
                 {
-                    
+
                     if (!this.cache.ElementAt(cont).Value.writed)
                     {
                         int tries = 5;
@@ -189,6 +195,7 @@ namespace FilesVars
         {
             lock (toLock)
             {
+                name = varsPrefix + name;
                 string ret;
                 if ((_useCacheInRam) && (cache.ContainsKey(name)))
                     return cache[name].value;
@@ -246,6 +253,7 @@ namespace FilesVars
         {
             lock (toLock)
             {
+                name = varsPrefix + name;
                 this.cache.Remove(name);
 
                 //operações com arquivos devem ser, preferencialmente, realizadas em threads
@@ -286,6 +294,7 @@ namespace FilesVars
 
         public string[] getChilds(string parent)
         {
+            parent = varsPrefix + parent;
             string[] result = System.IO.Directory.GetFiles(directory, parent + "*");
             for (int cont = 0; cont < result.Length; cont++)
                 result[cont] = System.IO.Path.GetFileName(result[cont]);
