@@ -1,17 +1,23 @@
 /*
 	by: Rafael Tonello (tonello.rafinha@gmail.com)
 	
-	Version; 1.1.0.0
+	Version; 2.0.0.0
 
 	History:
 		1.0.0.0 -> 24/01/2018-> First version
 		1.1.0.0 -> 24/01/2018-> Prefix for variables
+        2.0.0.0 -> 24/01/2018-> Support for http requests (GET, POST and DELETE)
+        2.0.1.0 -> 24/01/2018-> Added semaphore resource to access files
+        2.0.2.0 -> 09/02/2018-> Added isAvailable function and remove .lock entries from getChilds result
+        2.0.2.1 -> 09/02/2018-> Fixed a bug that throwing an exception when the .lock entries were removed from the getChilds result
 
 */
 
 using Libs;
+using Shared;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
@@ -99,10 +105,11 @@ namespace FilesVars
         private string appPath = "";
         private string invalidValue = "---////invalid////-----";
         EasyThread th = null;
-        object toLock = new object();
         bool _useCacheInRam = true;
         string directory = "";
         string varsPrefix;
+
+        HttpUtils httpUtils = new HttpUtils();
 
         public Vars(string directory = "", bool useCacheInRam = true, string varsPrefix = "")
         {
@@ -112,195 +119,21 @@ namespace FilesVars
             if (directory == "")
                 directory = this.appPath + "\\vars";
 
+            if ((directory[directory.Length-1] != '\\') && (directory[directory.Length - 1] != '/'))
+                directory += "\\";
+
+            if (directory.IndexOf("http://") == 0)
+                directory = directory.Replace("\\", "/");
+            else
+            {
+                if (!System.IO.Directory.Exists(directory))
+                    System.IO.Directory.CreateDirectory(directory);
+            }
+
             this.directory = directory;
 
-            if (!System.IO.Directory.Exists(directory))
-                System.IO.Directory.CreateDirectory(directory);
-
-        }
-        /// <summary>
-        /// Função para armazenar uma variável no sistema. Estas variáveis são persistentes e podem ser recuperadas em outras.
-        /// execuções.
-        /// </summary>
-        /// <param name="name">Nome da variável.</param>
-        /// <param name="value">Valor da variável.</param>
-        public void _rawSet(string name, string value)
-        {
-            lock (toLock)
-            {
-                name = varsPrefix + name;
-                if (_useCacheInRam)
-                {
-                    if ((!this.cache.ContainsKey(name)) || (this.cache[name] == null)) this.cache[name] = new FileVar { name = name };
-                    this.cache[name].value = value;
-                    this.cache[name].writed = false;
-
-
-                    if (th == null)
-                        th = new EasyThread(this.writeToFile, true);
-                }
-                else
-                    System.IO.File.WriteAllText(directory + "\\" + name, value);
-            }
         }
 
-
-
-        private void writeToFile(EasyThread sender, object parameters)
-        {
-            //operações com arquivos devem ser, preferencialmente, realizadas em threads
-
-            sender.sleep(10);
-            int cont = 0;
-            
-            while (cont < this.cache.Count)
-            {
-                try
-                {
-
-                    if (!this.cache.ElementAt(cont).Value.writed)
-                    {
-                        int tries = 5;
-                        int currentRetryInterval = 50;
-                        while (tries > 0)
-                        {
-                            try
-                            {
-                                string name = this.StringToFileName(this.cache.ElementAt(cont).Key);
-                                System.IO.File.WriteAllText(directory + "\\" + name, this.cache.ElementAt(cont).Value.value);
-                                this.cache[name].writed = true;
-                                tries = 0;
-                            }
-                            catch
-                            {
-                                Thread.Sleep(currentRetryInterval);
-                                currentRetryInterval += 50;
-                            }
-                            tries--;
-                        }
-                    }
-                }
-                catch
-                { }
-
-                cont++;
-            }
-        }
-        /// <summary>
-        /// Função utilizada para recuperar uma variável.
-        /// </summary>
-        /// <param name="name">Nome da variável.</param>
-        /// <returns></returns>
-        public string _rawGet(string name)
-        {
-            lock (toLock)
-            {
-                name = varsPrefix + name;
-                string ret;
-                if ((_useCacheInRam) && (cache.ContainsKey(name)))
-                    return cache[name].value;
-                else
-                {
-                    int tries = 5;
-                    //used to increment the time between the fail and new try
-                    int currentRetryInterval = 50;
-                    while (tries > 0)
-                    {
-                        try
-                        {
-                            if (System.IO.Directory.Exists(directory))
-                            {
-                                string fName = directory + "\\" + this.StringToFileName(name);
-                                if (System.IO.File.Exists(fName))
-                                    ret = System.IO.File.ReadAllText(fName);
-                                else
-                                    ret = invalidValue;
-                                if ((!this.cache.ContainsKey(name)) || (this.cache[name] == null)) this.cache[name] = new FileVar { name = name };
-                                this.cache[name].value = ret;
-                                this.cache[name].writed = true;
-                                return ret;
-                            }
-                        }
-                        catch
-                        {
-                            Thread.Sleep(currentRetryInterval);
-                            currentRetryInterval += 50;
-                        }
-                        tries--;
-
-                    }
-                }
-                return this.invalidValue;
-            }
-        }
-
-
-        public VarValue get(string name, object def)
-        {
-            VarValue ret = new VarValue { AsString = this._rawGet(name) };
-            if (ret.AsString == this.invalidValue)
-                ret.AsString = def.ToString();
-
-            return ret;
-        }
-
-        public void set(string name, object value)
-        {
-            this._rawSet(name, value.ToString());
-        }
-
-        public bool del(string name)
-        {
-            lock (toLock)
-            {
-                name = varsPrefix + name;
-                this.cache.Remove(name);
-
-                //operações com arquivos devem ser, preferencialmente, realizadas em threads
-                Thread trWrt = new Thread(delegate ()
-                {
-                    int tries = 5;
-                    int currentRetryInterval = 50;
-                    while (tries > 0)
-                    {
-                        try
-                        {
-                            name = this.StringToFileName(name);
-                            if (System.IO.Directory.Exists(directory))
-                            {
-                                System.IO.File.Delete(directory + "\\" + name);
-                            }
-                            tries = 0;
-                        }
-                        catch
-                        {
-                            Thread.Sleep(currentRetryInterval);
-                            currentRetryInterval += 50;
-                        }
-                        tries--;
-                    }
-                });
-                trWrt.Start();
-
-                return true;
-            }
-        }
-
-        public void set(string name, VarValue value)
-        {
-            this._rawSet(name, value.AsString);
-        }
-
-
-        public string[] getChilds(string parent)
-        {
-            parent = varsPrefix + parent;
-            string[] result = System.IO.Directory.GetFiles(directory, parent + "*");
-            for (int cont = 0; cont < result.Length; cont++)
-                result[cont] = System.IO.Path.GetFileName(result[cont]);
-
-            return result;
-        }
         private string StringToFileName(string text)
         {
             StringBuilder ret = new StringBuilder();
@@ -352,5 +185,371 @@ namespace FilesVars
                 catch { }
             }
         }
+
+        private void write(string fName, string value)
+        {
+            if (fName.ToLower().IndexOf("http://") == 0)
+            {
+                int tries = 3;
+                while (tries > 0)
+                {
+                    try
+                    {
+                        httpUtils.httpRequest(fName, value, null, "POST");
+                        break;
+                    }
+                    catch { }
+                    tries--;
+                }
+
+            }
+            else
+            {
+                waitOne(fName);
+                int tries = 3;
+                while (tries > 0)
+                {
+                    try
+                    {
+                        System.IO.File.WriteAllText(fName, value);
+                        tries = 0;
+                    }
+                    catch { }
+                    tries--;
+                    Thread.Sleep(10);
+                }
+                release(fName);
+            }
+            
+        }
+
+        private string read(string fName)
+        {
+            if (fName.ToLower().IndexOf("http://") == 0)
+            {
+                int tries = 3;
+                while (tries > 0)
+                {
+                    try
+                    {
+                        //the server can return invalidValue
+                        return httpUtils.httpRequest(fName);
+                    }
+                    catch { }
+                    tries--;
+                }
+            }
+            else
+            {
+                int tries = 3;
+                while (tries > 0)
+                {
+                    try
+                    {
+                        waitOne(fName);
+                        if (System.IO.File.Exists(fName))
+                        {
+                            release(fName);
+                            return System.IO.File.ReadAllText(fName);
+                        }
+                        else
+                        {
+                            release(fName);
+                            tries = 0;
+                        }
+                    }
+                    catch { }
+                    tries--;
+                }
+            }
+            
+            return this.invalidValue;
+        }
+
+
+
+        private void writeToFile(EasyThread sender, object parameters)
+        {
+            //operações com arquivos devem ser, preferencialmente, realizadas em threads
+
+            sender.sleep(10);
+            int cont = 0;
+
+            while (cont < this.cache.Count)
+            {
+                try
+                {
+
+                    if (!this.cache.ElementAt(cont).Value.writed)
+                    {
+                        int tries = 5;
+                        int currentRetryInterval = 50;
+                        while (tries > 0)
+                        {
+                            try
+                            {
+                                string name = this.StringToFileName(this.cache.ElementAt(cont).Key);
+                                write(directory + name, this.cache.ElementAt(cont).Value.value);
+                                this.cache[name].writed = true;
+                                tries = 0;
+                            }
+                            catch
+                            {
+                                Thread.Sleep(currentRetryInterval);
+                                currentRetryInterval += 50;
+                            }
+                            tries--;
+                        }
+                    }
+                }
+                catch
+                { }
+
+                cont++;
+            }
+        }
+
+        public VarValue get(string name, object def)
+        {
+            name = varsPrefix + name;
+            string ret = this.invalidValue;
+            if (_useCacheInRam)
+            {
+                if (cache.ContainsKey(name))
+                    ret = cache[name].value;
+            }
+            if (ret == this.invalidValue)
+            {
+                try
+                {
+                    string fName = directory + this.StringToFileName(name);
+                    ret = read(fName);
+                    if ((!this.cache.ContainsKey(name)) || (this.cache[name] == null)) this.cache[name] = new FileVar { name = name };
+                    this.cache[name].value = ret;
+                    this.cache[name].writed = true;
+                }
+                catch
+                {
+                    ret = invalidValue;
+                }
+            }
+
+
+            if (ret != this.invalidValue)
+                return new VarValue { AsString = ret };
+            else
+                return new VarValue { AsString = def is string ? (string)def : def.ToString() };
+        }
+
+        public void set(string varnName, object value)
+        {
+            varnName = varsPrefix + varnName;
+            if (!(value is string))
+                value = value.ToString();
+            
+
+            if (_useCacheInRam)
+            {
+
+                if (!this.cache.ContainsKey(varnName))
+                    this.cache[varnName] = new FileVar { name = varnName };
+                
+                this.cache[varnName].value = (string)value;
+                this.cache[varnName].writed = false;
+
+
+                if (th == null)
+                    th = new EasyThread(this.writeToFile, true);
+            }
+            else
+                write(directory + varnName, value is string ? (string)value : value.ToString());
+        }
+        public void set(string name, VarValue value)
+        {
+            this.set(name, value.AsString);
+        }
+
+        public bool del(string name)
+        {
+            
+            name = directory + StringToFileName(varsPrefix + name);
+            this.cache.Remove(name);
+
+            //operações com arquivos devem ser, preferencialmente, realizadas em threads
+            Thread trWrt = new Thread(delegate ()
+            {
+                if (name.ToLower().IndexOf("http://") == 0)
+                {
+                    int tries = 3;
+                    while (tries > 0)
+                    {
+                        try
+                        {
+                            httpUtils.httpRequest(name, "", null, "DELETE");
+                        }
+                        catch { }
+                        tries--;
+                    }
+                }
+                else
+                {
+                    int tries = 5;
+                    int currentRetryInterval = 50;
+                    while (tries > 0)
+                    {
+                        try
+                        {
+                            name = this.StringToFileName(name);
+                            waitOne(name);
+                            if (System.IO.File.Exists(name))
+                            {
+                                System.IO.File.Delete(name);
+                            }
+                            release(name);
+                            tries = 0;
+                        }
+                        catch
+                        {
+                            Thread.Sleep(currentRetryInterval);
+                            currentRetryInterval += 50;
+                        }
+                        tries--;
+                    }
+                }
+            });
+            trWrt.Start();
+
+            return true;
+        }
+
+
+        public bool isAvailable()
+        {
+            if (directory.ToLower().IndexOf("http://") == 0)
+            {
+                try
+                {
+                    httpUtils.httpRequest(directory);
+                }
+                catch {
+                    return false;
+                }
+            }
+            return true;
+        }
+        public bool exists(string varName)
+        {
+            varName = varsPrefix + varName;
+
+            if (this.cache.ContainsKey(varName))
+                return true; 
+            else if (varName.ToLower().IndexOf("http://") == 0)
+            {
+                int tries = 3;
+                varName = directory + varName;
+                while (tries > 0)
+                {
+                    try
+                    {
+                        //the server can return invalidValue
+                        string tmp = httpUtils.httpRequest(varName);
+                        if (tmp != invalidValue)
+                            return true;
+                    }
+                    catch { }
+                    tries--;
+                }
+            }
+            else
+            {
+                int tries = 3;
+                varName = directory + varName;
+                while (tries > 0)
+                {
+                    try
+                    {
+                        return System.IO.File.Exists(varName);
+                    }
+                    catch { }
+                    tries--;
+                }
+            }
+
+            return false;
+
+        }
+
+        public string[] getChilds(string parent)
+        {
+            parent = StringToFileName(varsPrefix + parent) + "/*";
+            List<string> result = new List<string>();
+            if (directory.ToLower().IndexOf("http://") == 0)
+            {
+                int tries = 3;
+                while (tries > 0)
+                {
+                    try
+                    {
+                        result = httpUtils.httpRequest(directory + parent, "", new string[] { "Accept: text/csv"}, "SEARCH").Split(new char[] {',', ';' }).ToList();
+                    }
+                    catch { }
+                    tries--;
+                }
+            }
+            else
+            {
+                result = System.IO.Directory.GetFiles(directory, parent + "*").ToList();
+                for (int cont = 0; cont < result.Count; cont++)
+                    result[cont] = System.IO.Path.GetFileName(result[cont]);
+
+                if (_useCacheInRam)
+                {
+                    //carrega registros do cache
+                    foreach (var curr in cache)
+                    {
+                        if (curr.Key.ToUpper().Contains(parent.ToUpper()) && !result.Contains(curr.Key))
+                            result.Add(curr.Key);
+    
+                    }
+                }
+                
+            }
+
+            for (int cont = result.Count - 1; cont >= 0; cont--)
+                if (result[cont].Contains(".lock"))
+                    result.RemoveAt(cont);
+
+            return result.ToArray();
+        }
+
+        private void waitOne(string fname)
+        {
+            string lockFile = fname + ".lock";
+            DateTime start = DateTime.Now;
+
+            while (File.Exists(lockFile))
+            {
+                Thread.Sleep(10);
+            }
+
+            File.WriteAllText(lockFile, "locked");
+        }
+
+        private void release(string fname)
+        {
+            string lockFile = fname + ".lock";
+            while (true)
+            {
+                try
+                {
+                    if (File.Exists(lockFile))
+                        File.Delete(lockFile);
+                    break;
+                }
+                catch { }
+                Thread.Sleep(10);
+            }
+        }
+
     }
 }
