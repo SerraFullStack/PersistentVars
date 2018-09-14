@@ -1,7 +1,7 @@
 /*
 	by: Rafael Tonello (tonello.rafinha@gmail.com)
 	
-	Version; 2.0.0.0
+	Version; 3.0.0.1
 
 	History:
 		1.0.0.0 -> 24/01/2018-> First version
@@ -10,6 +10,8 @@
         2.0.1.0 -> 24/01/2018-> Added semaphore resource to access files
         2.0.2.0 -> 09/02/2018-> Added isAvailable function and remove .lock entries from getChilds result
         2.0.2.1 -> 09/02/2018-> Fixed a bug that throwing an exception when the .lock entries were removed from the getChilds result
+		3.0.0.0 -> 06/08/2018-> Now, the library can work with subfolders instead just files with object notation names (if files with object notation name is found, their will, automatically, converted to new system)
+		3.0.0.1 -> 12/09/2018-> Solved a problem with del function (the folders that were empty, were not being deleted)
 
 */
 
@@ -19,6 +21,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -109,41 +112,62 @@ namespace FilesVars
         string directory = "";
         string varsPrefix;
 
-        HttpUtils httpUtils = new HttpUtils();
+        //this property indicates that the class can use subfolders or just files with object natation names.
+        //This configuratio can sugestted in the constructor (if any folder is found inside the Vars folder, this
+        //property will receive the value "true"
+        bool useSubFolders = false;
 
-        public Vars(string directory = "", bool useCacheInRam = true, string varsPrefix = "")
+        HttpUtils httpUtils = new HttpUtils();
+        //this semaphore is used to make available a semphore to developer. Is just for developer no having to instanciate a sempahroe externaly and
+        //so he have a semaphore for all places where he will use a same instance of vars.
+        Semaphore locker = new Semaphore(1, int.MaxValue);
+
+        public Vars(string directory = "", bool useCacheInRam = true, string varsPrefix = "", bool useSubFolders = true)
         {
+            this.useSubFolders = useSubFolders;
+
             this._useCacheInRam = useCacheInRam;
-            this.appPath = System.IO.Path.GetDirectoryName(System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName) + "\\";
+            this.appPath = System.IO.Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location).Replace("\\", "/") + "/";
             this.varsPrefix = varsPrefix;
             if (directory == "")
-                directory = this.appPath + "\\vars";
+                directory = this.appPath + "vars";
 
-            if ((directory[directory.Length-1] != '\\') && (directory[directory.Length - 1] != '/'))
-                directory += "\\";
+
+
 
             if (directory.IndexOf("http://") == 0)
                 directory = directory.Replace("\\", "/");
             else
-            {
-                if (!System.IO.Directory.Exists(directory))
-                    System.IO.Directory.CreateDirectory(directory);
-            }
+                createDirectory(directory);
+
+            if (directory[directory.Length - 1] != '/')
+                directory += "/";
 
             this.directory = directory;
 
+            //fore retrocompatibility, try conver all objectnotation files to format (using subdirectories)
+            ConvertOldFolderFormat();
+
+
         }
 
-        private string StringToFileName(string text)
+        public static Semaphore SemaphoreConvert = new Semaphore(1, int.MaxValue);
+        private void ConvertOldFolderFormat()
         {
-            StringBuilder ret = new StringBuilder();
-            foreach (char att in text)
+            SemaphoreConvert.WaitOne();
+            if (useSubFolders)
             {
-                if ("abcdefghijklmnopqrstuvxywzABCDEFGHIJKLMNOPRSTUVXWYZ0123456789_.-".IndexOf(att) > -1)
-                    ret.Append(att);
-            }
+                var oldFiles = Directory.GetFiles(directory);
+                foreach (var curr in oldFiles)
+                {
+                    if (curr.Contains("start")) ;
+                    this.set(Path.GetFileName(curr), File.ReadAllText(curr));
+                    File.Delete(curr);
+                }
 
-            return ret.ToString();
+            }
+            SemaphoreConvert.Release();
+            flush();
         }
 
         private string getCacheVar(string name)
@@ -188,6 +212,7 @@ namespace FilesVars
 
         private void write(string fName, string value)
         {
+            fName = getValidVarName(fName);
             if (fName.ToLower().IndexOf("http://") == 0)
             {
                 int tries = 3;
@@ -205,12 +230,23 @@ namespace FilesVars
             }
             else
             {
+
+                if (this.useSubFolders)
+                    fName = fName.Substring(0, directory.Length + 1) + fName.Substring(directory.Length + 1).Replace('.', '/');
+                fName = fName.Replace("\\", "/");
+
+                createDirectory(Path.GetDirectoryName(fName));
+
+
+
                 waitOne(fName);
                 int tries = 3;
                 while (tries > 0)
                 {
                     try
                     {
+
+
                         System.IO.File.WriteAllText(fName, value);
                         tries = 0;
                     }
@@ -220,11 +256,12 @@ namespace FilesVars
                 }
                 release(fName);
             }
-            
+
         }
 
         private string read(string fName)
         {
+            fName = getValidVarName(fName);
             if (fName.ToLower().IndexOf("http://") == 0)
             {
                 int tries = 3;
@@ -242,27 +279,37 @@ namespace FilesVars
             else
             {
                 int tries = 3;
+                string oldFolderFormatFileName = fName;
+
+                if (this.useSubFolders)
+                    fName = fName.Substring(0, directory.Length + 1) + fName.Substring(directory.Length + 1).Replace('.', '/');
+                fName = fName.Replace("\\", "/");
+
                 while (tries > 0)
                 {
                     try
                     {
-                        waitOne(fName);
+
                         if (System.IO.File.Exists(fName))
                         {
+                            waitOne(fName);
+                            string ret = System.IO.File.ReadAllText(fName);
                             release(fName);
-                            return System.IO.File.ReadAllText(fName);
+                            return ret;
                         }
                         else
                         {
-                            release(fName);
                             tries = 0;
                         }
                     }
-                    catch { }
+                    catch
+                    {
+                        try { release(fName); } catch { }
+                    }
                     tries--;
                 }
             }
-            
+
             return this.invalidValue;
         }
 
@@ -288,7 +335,7 @@ namespace FilesVars
                         {
                             try
                             {
-                                string name = this.StringToFileName(this.cache.ElementAt(cont).Key);
+                                string name = getValidVarName(this.cache.ElementAt(cont).Key);
                                 write(directory + name, this.cache.ElementAt(cont).Value.value);
                                 this.cache[name].writed = true;
                                 tries = 0;
@@ -322,9 +369,8 @@ namespace FilesVars
             {
                 try
                 {
-                    string fName = directory + this.StringToFileName(name);
-                    ret = read(fName);
-                    if ((!this.cache.ContainsKey(name)) || (this.cache[name] == null)) this.cache[name] = new FileVar { name = name };
+                    ret = read(directory + name);
+                    if ((ret != invalidValue) && ((!this.cache.ContainsKey(name)) || (this.cache[name] == null))) this.cache[name] = new FileVar { name = name };
                     this.cache[name].value = ret;
                     this.cache[name].writed = true;
                 }
@@ -346,14 +392,14 @@ namespace FilesVars
             varnName = varsPrefix + varnName;
             if (!(value is string))
                 value = value.ToString();
-            
+
 
             if (_useCacheInRam)
             {
 
                 if (!this.cache.ContainsKey(varnName))
                     this.cache[varnName] = new FileVar { name = varnName };
-                
+
                 this.cache[varnName].value = (string)value;
                 this.cache[varnName].writed = false;
 
@@ -369,15 +415,27 @@ namespace FilesVars
             this.set(name, value.AsString);
         }
 
-        public bool del(string name)
+        public bool del(string name, bool delChilds = false, bool await = false)
         {
-            
-            name = directory + StringToFileName(varsPrefix + name);
-            this.cache.Remove(name);
+            this.cache.Remove(varsPrefix + name);
+
+            bool done = false;
 
             //operações com arquivos devem ser, preferencialmente, realizadas em threads
             Thread trWrt = new Thread(delegate ()
             {
+                //delete childs
+                if (delChilds)
+                {
+                    var childs = this.getChilds(name);
+                    foreach (var curr in childs)
+                        this.del(curr, true, await);
+                }
+
+                name = varsPrefix + name;
+
+                name = directory + name;
+
                 if (name.ToLower().IndexOf("http://") == 0)
                 {
                     int tries = 3;
@@ -393,32 +451,88 @@ namespace FilesVars
                 }
                 else
                 {
-                    int tries = 5;
-                    int currentRetryInterval = 50;
-                    while (tries > 0)
+                    name = getValidVarName(name);
+
+                    if (this.useSubFolders)
+                        name = name.Substring(0, directory.Length + 1) + name.Substring(directory.Length + 1).Replace('.', '/');
+
+                    name = name.Replace("\\", "/");
+
+                    //createDirectory(Path.GetDirectoryName(name));
+
+                    while (name.Contains('/'))
                     {
-                        try
+                        int tries = 5;
+                        int currentRetryInterval = 50;
+                        if (System.IO.File.Exists(name))
                         {
-                            name = this.StringToFileName(name);
-                            waitOne(name);
-                            if (System.IO.File.Exists(name))
+                            while (tries > 0)
                             {
-                                System.IO.File.Delete(name);
+                                try
+                                {
+                                    {
+                                        waitOne(name);
+                                        System.IO.File.Delete(name);
+                                        release(name);
+                                    }
+                                    tries = 0;
+                                }
+                                catch
+                                {
+                                    Thread.Sleep(currentRetryInterval);
+                                    currentRetryInterval += 50;
+                                }
+                                release(name);
+                                tries--;
                             }
-                            release(name);
-                            tries = 0;
                         }
-                        catch
+                        else if (System.IO.Directory.Exists(name))
                         {
-                            Thread.Sleep(currentRetryInterval);
-                            currentRetryInterval += 50;
+                            try
+                            {
+                                if (Directory.GetFiles(name).Length > 0)
+                                {
+                                    name = "";
+                                    break;
+                                }
+                            }
+                            catch { }
+                            try
+                            {
+                                if (Directory.GetDirectories(name).Length > 0)
+                                {
+                                    name = "";
+                                    break;
+                                }
+                            }
+                            catch { }
+
+                            if (name.Length <= directory.Length)
+                            {
+                                name = "";
+                                break;
+                            }
+
+                            try
+                            {
+                                Directory.Delete(name);
+                            }
+                            catch { }
                         }
-                        tries--;
+                        name = name.Substring(0, name.LastIndexOf('/'));
                     }
                 }
+
+                done = true;
             });
             trWrt.Start();
 
+
+            if (await)
+            {
+                while (!done)
+                    Thread.Sleep(10);
+            }
             return true;
         }
 
@@ -431,7 +545,8 @@ namespace FilesVars
                 {
                     httpUtils.httpRequest(directory);
                 }
-                catch {
+                catch
+                {
                     return false;
                 }
             }
@@ -442,7 +557,8 @@ namespace FilesVars
             varName = varsPrefix + varName;
 
             if (this.cache.ContainsKey(varName))
-                return true; 
+                return true;
+
             else if (varName.ToLower().IndexOf("http://") == 0)
             {
                 int tries = 3;
@@ -462,6 +578,15 @@ namespace FilesVars
             }
             else
             {
+                varName = directory + varName;
+
+                if (this.useSubFolders)
+                    varName = varName.Substring(0, directory.Length + 1) + varName.Substring(directory.Length + 1).Replace('.', '/');
+
+                varName = varName.Replace("\\", "/");
+
+                createDirectory(Path.GetDirectoryName(varName));
+
                 int tries = 3;
                 varName = directory + varName;
                 while (tries > 0)
@@ -481,7 +606,7 @@ namespace FilesVars
 
         public string[] getChilds(string parent)
         {
-            parent = StringToFileName(varsPrefix + parent) + "/*";
+            parent = varsPrefix + parent;
             List<string> result = new List<string>();
             if (directory.ToLower().IndexOf("http://") == 0)
             {
@@ -490,7 +615,7 @@ namespace FilesVars
                 {
                     try
                     {
-                        result = httpUtils.httpRequest(directory + parent, "", new string[] { "Accept: text/csv"}, "SEARCH").Split(new char[] {',', ';' }).ToList();
+                        result = httpUtils.httpRequest(directory + parent + "/*", "", new string[] { "Accept: text/csv" }, "SEARCH").Split(new char[] { ',', ';' }).ToList();
                     }
                     catch { }
                     tries--;
@@ -498,9 +623,35 @@ namespace FilesVars
             }
             else
             {
-                result = System.IO.Directory.GetFiles(directory, parent + "*").ToList();
+                parent = getValidVarName(parent);
+                if (this.useSubFolders)
+                    parent = parent.Replace(".", "/");
+                List<string> folders = new List<string>();
+
+                folders.Add(directory + parent);
+
+                while (folders.Count > 0)
+                {
+                    string currFolder = folders[0];
+                    folders.RemoveAt(0);
+
+                    currFolder = currFolder.Replace("\\", "/");
+
+                    if (Directory.Exists(currFolder))
+                    {
+                        result.AddRange(Directory.GetFiles(currFolder));
+                        folders.AddRange(Directory.GetDirectories(currFolder));
+                    }
+                }
+
+
+
                 for (int cont = 0; cont < result.Count; cont++)
-                    result[cont] = System.IO.Path.GetFileName(result[cont]);
+                    result[cont] = result[cont].Substring(directory.Length).Replace('/', '.').Replace('\\', '.');
+
+                for (int cont = result.Count - 1; cont >= 0; cont--)
+                    if (result[cont].Contains(".lock"))
+                        result.RemoveAt(cont);
 
                 if (_useCacheInRam)
                 {
@@ -509,27 +660,44 @@ namespace FilesVars
                     {
                         if (curr.Key.ToUpper().Contains(parent.ToUpper()) && !result.Contains(curr.Key))
                             result.Add(curr.Key);
-    
                     }
                 }
-                
+
+                //remove prefixNames
+                for (int cont = 0; cont < result.Count; cont++)
+                    result[cont] = result[cont].Substring(varsPrefix.Length);
+
             }
 
-            for (int cont = result.Count - 1; cont >= 0; cont--)
-                if (result[cont].Contains(".lock"))
-                    result.RemoveAt(cont);
+
 
             return result.ToArray();
         }
 
-        private void waitOne(string fname)
+        /// <summary>
+        /// If a lock file exists, waits for her exclusion. After, create a new lock file.
+        /// </summary>
+        /// <param name="fname">File to lock</param>
+        /// <param name="timeout">Max wait timeout. User 0 (zero) to timeout = forever</param>
+        private void waitOne(string fname, int timeout = 10000)
         {
-            string lockFile = fname + ".lock";
+            string lockFile = fname;
+
+            lockFile = getValidVarName(lockFile);
             DateTime start = DateTime.Now;
+
+            //if (this.useSubFolders)
+            //    lockFile = lockFile.Substring(0, directory.Length + 1) + lockFile.Substring(directory.Length + 1).Replace('.', '/');
+            lockFile = lockFile.Replace("\\", "/");
+            createDirectory(Path.GetDirectoryName(lockFile));
+
+            lockFile += ".lock";
 
             while (File.Exists(lockFile))
             {
                 Thread.Sleep(10);
+                if ((timeout > 0) && (DateTime.Now.Subtract(start).TotalMilliseconds >= timeout))
+                    break;
             }
 
             File.WriteAllText(lockFile, "locked");
@@ -537,7 +705,20 @@ namespace FilesVars
 
         private void release(string fname)
         {
-            string lockFile = fname + ".lock";
+            string lockFile = fname;
+
+            lockFile = getValidVarName(lockFile);
+
+            if (this.useSubFolders)
+                lockFile = lockFile.Substring(0, directory.Length + 1) + lockFile.Substring(directory.Length + 1).Replace('.', '/');
+
+            lockFile = lockFile.Replace("\\", "/");
+
+            lockFile += ".lock";
+
+            if (!Directory.Exists(Path.GetDirectoryName(lockFile)))
+                return;
+
             while (true)
             {
                 try
@@ -549,6 +730,61 @@ namespace FilesVars
                 catch { }
                 Thread.Sleep(10);
             }
+        }
+
+        private void createDirectory(string directoryName)
+        {
+            directoryName = getValidVarName(directoryName);
+
+            directoryName = directoryName.Replace('\\', '/');
+            if (directoryName[directoryName.Length - 1] == '/')
+                directoryName = directoryName.Substring(0, directoryName.Length - 1);
+
+            List<string> folderNames = directoryName.Split('/').ToList();
+
+            string currName = folderNames[0];
+            folderNames.RemoveAt(0);
+            do
+            {
+                currName = currName + "/" + folderNames[0];
+                folderNames.RemoveAt(0);
+
+                if (File.Exists(currName))
+                    File.Delete(currName);
+            } while (folderNames.Count > 0);
+
+            if (!Directory.Exists(directoryName))
+                Directory.CreateDirectory(directoryName);
+
+        }
+
+        public void flush()
+        {
+            if (th == null)
+                th = new EasyThread(this.writeToFile, true);
+
+            th.pause();
+
+            writeToFile(th, null);
+
+            th.resume();
+        }
+
+        private string getValidVarName(string varName)
+        {
+            string ret = "";
+            int index = 0;
+            foreach (var c in varName)
+            {
+                if ("abcdefghijklmnopqrstuvxywz_/.-0123456789, ()\\".ToUpper().Contains((c + "").ToUpper()))
+                    ret += c;
+                else if ((c == ':') && (index == 1))
+                    ret += c;
+
+                index++;
+            }
+
+            return ret;
         }
 
     }
