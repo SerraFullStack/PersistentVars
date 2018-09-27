@@ -220,7 +220,7 @@ namespace FilesVars
                 {
                     try
                     {
-                        httpUtils.httpRequest(fName, value, null, "POST");
+                        httpUtils.httpRequest(fName, "POST", value);
                         break;
                     }
                     catch { }
@@ -443,7 +443,7 @@ namespace FilesVars
                     {
                         try
                         {
-                            httpUtils.httpRequest(name, "", null, "DELETE");
+                            httpUtils.httpRequest(name, "DELETE");
                         }
                         catch { }
                         tries--;
@@ -588,7 +588,7 @@ namespace FilesVars
                 createDirectory(Path.GetDirectoryName(varName));
 
                 int tries = 3;
-                varName = directory + varName;
+
                 while (tries > 0)
                 {
                     try
@@ -615,7 +615,7 @@ namespace FilesVars
                 {
                     try
                     {
-                        result = httpUtils.httpRequest(directory + parent + "/*", "", new string[] { "Accept: text/csv" }, "SEARCH").Split(new char[] { ',', ';' }).ToList();
+                        result = httpUtils.httpRequest(directory + parent + "/*", "SEARCH", "", new Dictionary<string, string> { { "Accept", "text/csv" } }).Split(new char[] { ',', ';' }).ToList();
                     }
                     catch { }
                     tries--;
@@ -700,7 +700,20 @@ namespace FilesVars
                     break;
             }
 
-            File.WriteAllText(lockFile, "locked");
+            timeout = 1000;
+            start = DateTime.Now;
+            while (DateTime.Now.Subtract(start).TotalMilliseconds < timeout)
+            {
+                try
+                {
+                    File.WriteAllText(lockFile, "locked");
+                    timeout = 0;
+                    break;
+                }
+                catch { Thread.Sleep(10); }
+                
+            }
+
         }
 
         private void release(string fname)
